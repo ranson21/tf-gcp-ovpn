@@ -3,6 +3,11 @@ variable "project_id" {
   type        = string
 }
 
+variable "client_id" {
+  description = "The OAUTH 2.0 Client ID for the web app"
+  type        = string
+}
+
 variable "region" {
   description = "The GCP region where resources will be created"
   type        = string
