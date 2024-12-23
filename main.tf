@@ -60,17 +60,15 @@ resource "google_compute_instance" "vpn_server" {
     }
   }
 
-  # metadata_startup_script = templatefile("${path.module}/templates/startup.sh", {
-  #   client_id = google_iap_client.project_client.client_id
-  #   domain    = var.domain
-  # })
-
   # Add these to the instance metadata
   metadata = {
     startup-script = templatefile("${path.module}/templates/startup.sh", {
-      client_id   = google_iap_client.project_client.client_id
-      domain      = var.domain
-      vpn_auth_py = file("${path.module}/templates/vpn_auth.py") # Add this line
+      client_id    = var.client_id
+      domain       = var.domain
+      openvpn_conf = file("${path.module}/templates/server.conf")
+      nginx_conf   = file("${path.module}/templates/nginx.conf")
+      external_ip  = google_compute_address.vpn_ip.address
+      systemd_unit = file("${path.module}/templates/vpn-web.service")
     })
 
     # Add a timestamp to force replacement
@@ -205,10 +203,12 @@ resource "google_compute_instance_group" "vpn_group" {
 # Add a local file resource to verify template rendering
 resource "local_file" "startup_script_debug" {
   content = templatefile("${path.module}/templates/startup.sh", {
-    client_id   = google_iap_client.project_client.client_id
-    domain      = var.domain
-    vpn_auth_py = file("${path.module}/templates/vpn_auth.py") # Add this line
-
+    client_id    = var.client_id
+    domain       = var.domain
+    openvpn_conf = file("${path.module}/templates/server.conf")
+    nginx_conf   = file("${path.module}/templates/nginx.conf")
+    external_ip  = google_compute_address.vpn_ip.address
+    systemd_unit = file("${path.module}/templates/vpn-web.service")
   })
   filename = "${path.module}/startup-script-debug.sh"
 }
@@ -217,4 +217,19 @@ resource "local_file" "startup_script_debug" {
 resource "local_file" "auth_app" {
   content  = file("${path.module}/templates/vpn_auth.py") # You'll create this file
   filename = "${path.module}/generated/vpn_auth.py"
+}
+
+resource "local_file" "openvpn_conf" {
+  content  = file("${path.module}/templates/server.conf")
+  filename = "${path.module}/generated/server.conf"
+}
+
+resource "local_file" "nginx_conf" {
+  content  = file("${path.module}/templates/nginx.conf")
+  filename = "${path.module}/generated/nginx.conf"
+}
+
+resource "local_file" "systemd_unit" {
+  content  = file("${path.module}/templates/vpn-web.service")
+  filename = "${path.module}/generated/vpn-web.service"
 }
