@@ -11,35 +11,39 @@ resource "google_compute_subnetwork" "vpn_subnet" {
   region        = var.region
 }
 
-# Add to main.tf
+# Project Data Source
 data "google_project" "current" {
   project_id = var.project_id
 }
 
-# Then modify the IAP brand resource
+# IAP Resources
 resource "google_iap_client" "project_client" {
   display_name = "OpenVPN Client"
   brand        = "projects/${data.google_project.current.number}/brands/${data.google_project.current.number}"
 }
 
-# Modify the IAP web binding to include more specific roles
 resource "google_iap_web_iam_binding" "binding" {
   project = var.project_id
   role    = "roles/iap.httpsResourceAccessor"
   members = [
-    "domain:${var.domain}",
+    "domain:${var.allowed_domain}",
     "serviceAccount:${google_compute_instance.vpn_server.service_account[0].email}"
   ]
 }
 
-
-# Add this to your main.tf
+# IP Address
 resource "google_compute_address" "vpn_ip" {
   name   = "${var.network_name}-ip"
   region = var.region
 }
 
-# Instance Resources
+# Server Image
+data "google_compute_image" "vpn_server" {
+  family  = "vpn-server"
+  project = var.project_id
+}
+
+# Instance Configuration
 resource "google_compute_instance" "vpn_server" {
   name         = "${var.network_name}-server"
   machine_type = var.instance_type
@@ -47,7 +51,7 @@ resource "google_compute_instance" "vpn_server" {
 
   boot_disk {
     initialize_params {
-      image = "debian-cloud/debian-11"
+      image = data.google_compute_image.vpn_server.self_link
       size  = var.disk_size_gb
     }
   }
@@ -56,26 +60,14 @@ resource "google_compute_instance" "vpn_server" {
     subnetwork = google_compute_subnetwork.vpn_subnet.id
     access_config {
       nat_ip = google_compute_address.vpn_ip.address
-      // Ephemeral IP
     }
   }
 
-  # Add these to the instance metadata
   metadata = {
-    startup-script = templatefile("${path.module}/templates/startup.sh", {
-      client_id    = var.client_id
-      domain       = var.domain
-      openvpn_conf = file("${path.module}/templates/server.conf")
-      nginx_conf   = file("${path.module}/templates/nginx.conf")
-      external_ip  = google_compute_address.vpn_ip.address
-      systemd_unit = file("${path.module}/templates/vpn-web.service")
-    })
-
-    # Add a timestamp to force replacement
-    startup-script-timestamp = timestamp()
-
-    # Enable OS login
-    enable-oslogin = "TRUE"
+    server_admin   = var.support_email
+    client_id      = var.client_id
+    allowed_domain = var.allowed_domain
+    domain_name    = var.domain_name
   }
 
   service_account {
@@ -83,6 +75,10 @@ resource "google_compute_instance" "vpn_server" {
   }
 
   tags = ["vpn-server"]
+
+  metadata_startup_script = <<EOF
+    systemctl start runtime-config
+  EOF
 
   allow_stopping_for_update = true
 }
@@ -99,29 +95,26 @@ resource "google_compute_firewall" "vpn_server" {
 
   allow {
     protocol = "tcp"
-    ports    = ["443"]
+    ports    = ["80", "443"]
   }
 
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["vpn-server"]
 }
 
-# SSH Access Firewall Rule
 resource "google_compute_firewall" "vpn_server_ssh" {
   name    = "${var.network_name}-allow-ssh"
   network = google_compute_network.vpn_network.name
 
   allow {
     protocol = "tcp"
-    ports    = ["22"] # SSH
+    ports    = ["22"]
   }
 
-  # You can restrict this to your IP or corporate network
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["vpn-server"]
 }
 
-# ICMP (ping) Firewall Rule - useful for debugging
 resource "google_compute_firewall" "vpn_server_icmp" {
   name    = "${var.network_name}-allow-icmp"
   network = google_compute_network.vpn_network.name
@@ -143,7 +136,6 @@ resource "google_compute_firewall" "health_check" {
     ports    = ["443"]
   }
 
-  # Health checker IP ranges
   source_ranges = [
     "35.191.0.0/16",
     "130.211.0.0/22"
@@ -152,24 +144,21 @@ resource "google_compute_firewall" "health_check" {
   target_tags = ["vpn-server"]
 }
 
-# Health Check for the Flask Auth Service
+# Health Check and Backend Service
 resource "google_compute_health_check" "vpn_health_check" {
   name               = "${var.network_name}-health-check"
   timeout_sec        = 5
-  check_interval_sec = 10 # Increased to reduce load on the service
+  check_interval_sec = 10
 
   https_health_check {
     port         = "443"
-    request_path = "/health" # Match the Flask endpoint
+    request_path = "/health"
   }
 
-  # Add a longer initial delay to allow the startup script to complete
   unhealthy_threshold = 3
   healthy_threshold   = 2
 }
 
-
-# Modified Backend Service
 resource "google_compute_backend_service" "vpn_portal" {
   name        = "${var.network_name}-portal"
   port_name   = "https"
@@ -198,38 +187,4 @@ resource "google_compute_instance_group" "vpn_group" {
     name = "https"
     port = 443
   }
-}
-
-# Add a local file resource to verify template rendering
-resource "local_file" "startup_script_debug" {
-  content = templatefile("${path.module}/templates/startup.sh", {
-    client_id    = var.client_id
-    domain       = var.domain
-    openvpn_conf = file("${path.module}/templates/server.conf")
-    nginx_conf   = file("${path.module}/templates/nginx.conf")
-    external_ip  = google_compute_address.vpn_ip.address
-    systemd_unit = file("${path.module}/templates/vpn-web.service")
-  })
-  filename = "${path.module}/startup-script-debug.sh"
-}
-
-# Add to your main.tf
-resource "local_file" "auth_app" {
-  content  = file("${path.module}/templates/vpn_auth.py") # You'll create this file
-  filename = "${path.module}/generated/vpn_auth.py"
-}
-
-resource "local_file" "openvpn_conf" {
-  content  = file("${path.module}/templates/server.conf")
-  filename = "${path.module}/generated/server.conf"
-}
-
-resource "local_file" "nginx_conf" {
-  content  = file("${path.module}/templates/nginx.conf")
-  filename = "${path.module}/generated/nginx.conf"
-}
-
-resource "local_file" "systemd_unit" {
-  content  = file("${path.module}/templates/vpn-web.service")
-  filename = "${path.module}/generated/vpn-web.service"
 }

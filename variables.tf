@@ -43,8 +43,13 @@ variable "support_email" {
   type        = string
 }
 
-variable "domain" {
+variable "allowed_domain" {
   description = "Authorized domain for Google authentication"
+  type        = string
+}
+
+variable "domain_name" {
+  description = "DNS Name for the OpenVPN Server"
   type        = string
 }
 
