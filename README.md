@@ -51,7 +51,7 @@ provider "google" {
 
 ```hcl
 module "vpn_server" {
-  source = "github.com/username/terraform-google-vpn-iap"
+  source = "github.com/ranson21/tf-gcp-ovpn"
 
   project_id     = "your-project-id"
   client_id      = "your-oauth-client-id"
