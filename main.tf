@@ -1,4 +1,19 @@
-# Network Resources
+# ---------------------------------------------------------------------------------------------------------------------
+# DATA SOURCES
+# ---------------------------------------------------------------------------------------------------------------------
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
+data "google_compute_image" "vpn_server" {
+  family  = "vpn-server"
+  project = var.project_id
+}
+
+# ---------------------------------------------------------------------------------------------------------------------
+# NETWORKING
+# Base networking resources including VPC and subnet
+# ---------------------------------------------------------------------------------------------------------------------
 resource "google_compute_network" "vpn_network" {
   name                    = var.network_name
   auto_create_subnetworks = false
@@ -11,12 +26,60 @@ resource "google_compute_subnetwork" "vpn_subnet" {
   region        = var.region
 }
 
-# Project Data Source
-data "google_project" "current" {
-  project_id = var.project_id
+resource "google_compute_address" "vpn_ip" {
+  name   = "${var.network_name}-ip"
+  region = var.region
 }
 
-# IAP Resources
+# ---------------------------------------------------------------------------------------------------------------------
+# SECURITY
+# Secret Manager resources for SSL certificates
+# ---------------------------------------------------------------------------------------------------------------------
+resource "google_secret_manager_secret" "ssl_cert" {
+  secret_id = "${var.network_name}-ssl-cert"
+
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret" "ssl_key" {
+  secret_id = "${var.network_name}-ssl-key"
+
+  replication {
+    auto {}
+  }
+}
+
+# Secret Manager IAM permissions
+resource "google_secret_manager_secret_iam_member" "cert_accessor" {
+  secret_id = google_secret_manager_secret.ssl_cert.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_compute_instance.vpn_server.service_account[0].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "key_accessor" {
+  secret_id = google_secret_manager_secret.ssl_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_compute_instance.vpn_server.service_account[0].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "cert_writer" {
+  secret_id = google_secret_manager_secret.ssl_cert.id
+  role      = "roles/secretmanager.secretVersionAdder"
+  member    = "serviceAccount:${google_compute_instance.vpn_server.service_account[0].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "key_writer" {
+  secret_id = google_secret_manager_secret.ssl_key.id
+  role      = "roles/secretmanager.secretVersionAdder"
+  member    = "serviceAccount:${google_compute_instance.vpn_server.service_account[0].email}"
+}
+
+# ---------------------------------------------------------------------------------------------------------------------
+# IDENTITY-AWARE PROXY (IAP)
+# IAP configuration for secure access
+# ---------------------------------------------------------------------------------------------------------------------
 resource "google_iap_client" "project_client" {
   display_name = "OpenVPN Client"
   brand        = "projects/${data.google_project.current.number}/brands/${data.google_project.current.number}"
@@ -31,19 +94,10 @@ resource "google_iap_web_iam_binding" "binding" {
   ]
 }
 
-# IP Address
-resource "google_compute_address" "vpn_ip" {
-  name   = "${var.network_name}-ip"
-  region = var.region
-}
-
-# Server Image
-data "google_compute_image" "vpn_server" {
-  family  = "vpn-server"
-  project = var.project_id
-}
-
-# Instance Configuration
+# ---------------------------------------------------------------------------------------------------------------------
+# COMPUTE INSTANCE
+# VPN server instance configuration
+# ---------------------------------------------------------------------------------------------------------------------
 resource "google_compute_instance" "vpn_server" {
   name         = "${var.network_name}-server"
   machine_type = var.instance_type
@@ -68,6 +122,7 @@ resource "google_compute_instance" "vpn_server" {
     client_id      = var.client_id
     allowed_domain = var.allowed_domain
     domain_name    = var.domain_name
+    network_name   = var.network_name
   }
 
   service_account {
@@ -83,7 +138,10 @@ resource "google_compute_instance" "vpn_server" {
   allow_stopping_for_update = true
 }
 
-# Firewall Rules
+# ---------------------------------------------------------------------------------------------------------------------
+# FIREWALL RULES
+# Network security rules for the VPN server
+# ---------------------------------------------------------------------------------------------------------------------
 resource "google_compute_firewall" "vpn_server" {
   name    = "${var.network_name}-allow-vpn"
   network = google_compute_network.vpn_network.name
@@ -125,66 +183,4 @@ resource "google_compute_firewall" "vpn_server_icmp" {
 
   source_ranges = ["0.0.0.0/0"]
   target_tags   = ["vpn-server"]
-}
-
-resource "google_compute_firewall" "health_check" {
-  name    = "${var.network_name}-allow-health-check"
-  network = google_compute_network.vpn_network.name
-
-  allow {
-    protocol = "tcp"
-    ports    = ["443"]
-  }
-
-  source_ranges = [
-    "35.191.0.0/16",
-    "130.211.0.0/22"
-  ]
-
-  target_tags = ["vpn-server"]
-}
-
-# Health Check and Backend Service
-resource "google_compute_health_check" "vpn_health_check" {
-  name               = "${var.network_name}-health-check"
-  timeout_sec        = 5
-  check_interval_sec = 10
-
-  https_health_check {
-    port         = "443"
-    request_path = "/health"
-  }
-
-  unhealthy_threshold = 3
-  healthy_threshold   = 2
-}
-
-resource "google_compute_backend_service" "vpn_portal" {
-  name        = "${var.network_name}-portal"
-  port_name   = "https"
-  protocol    = "HTTPS"
-  timeout_sec = 10
-
-  health_checks = [google_compute_health_check.vpn_health_check.id]
-
-  backend {
-    group = google_compute_instance_group.vpn_group.self_link
-  }
-
-  iap {
-    oauth2_client_id     = google_iap_client.project_client.client_id
-    oauth2_client_secret = google_iap_client.project_client.secret
-  }
-}
-
-# Instance Group
-resource "google_compute_instance_group" "vpn_group" {
-  name      = "${var.network_name}-group"
-  zone      = "${var.region}-a"
-  instances = [google_compute_instance.vpn_server.self_link]
-
-  named_port {
-    name = "https"
-    port = 443
-  }
 }
