@@ -35,7 +35,7 @@ steps:
       - "${_IS_MERGE}"
       - "--skip-asset"
     secretEnv: ["GITHUB_TOKEN"]
-    waitFor: ["deploy"]
+    waitFor: ["bump-version"]
     id: "create-release"
 
   # Update parent repo submodule
